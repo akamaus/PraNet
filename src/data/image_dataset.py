@@ -6,7 +6,7 @@ import cv2
 import torch
 
 
-class TransformingDataset(torch.utils.data.Dataset):
+class TransformingDataset(torch.utils.data.IterableDataset):
     def __init__(self):
         self.transform = None
 
@@ -27,14 +27,15 @@ class MultiGlobDataset(TransformingDataset):
 
         self.files = files
 
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, item):
-        fn = self.files[item]
-        if self.transform is None:
-            data = cv2.imread(fn)
-            return {'image': torch.tensor(data[:, :, ::-1].copy()) / 255.0, 'path': fn}
-        else:
-            sample = self.transform({'img_info': {'filename': fn}, 'img_prefix': None})
-            return sample
+    def __iter__(self):
+        for fn in self.files:
+            try:
+                if self.transform is None:
+                    data = cv2.imread(fn)
+                    yield {'image': torch.tensor(data[:, :, ::-1].copy()) / 255.0, 'path': fn}
+                else:
+                    sample = self.transform({'img_info': {'filename': fn}, 'img_prefix': None})
+                    logging.debug('ret sample')
+                    yield sample
+            except (AttributeError, RuntimeError) as e:
+                logging.warning(f'Got {e} during processing {fn}')
