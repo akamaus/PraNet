@@ -10,7 +10,8 @@ let
  my_torchvision = pypkgs.torchvision.override {pytorch=my_pytorch;};
  my_cudatoolkit = if withPytorchBin then pkgs.cudatoolkit_11_3 else pkgs.cudatoolkit;
 
- mmcv = pypkgs.callPackage ./mmcv.nix {cudatoolkit=my_cudatoolkit; pytorch=my_pytorch; torchvision=my_torchvision; withCuda=withCuda;};
+ mmcv = pypkgs.callPackage ./mmcv.nix {cudatoolkit=my_cudatoolkit; pytorch=my_pytorch; torchvision=my_torchvision;
+                                       withCuda=withCuda; cudaArchList = pypkgs.pytorchWithCuda.cudaArchList;};
  mmdetection = pypkgs.callPackage ./mmdetection.nix {mmcv = mmcv;};
 
  pythonEnv = (pkgs.python3.withPackages

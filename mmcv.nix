@@ -1,12 +1,18 @@
-{lib, fetchFromGitHub, cudatoolkit, which, ninja,
-  withTests ? false, withCuda ? true,
+{lib, symlinkJoin, fetchFromGitHub, cudatoolkit, which, ninja,
+  withTests ? false, withCuda ? true, cudaArchList,
    buildPythonPackage, addict, opencv3, pillow, pybind11, pytest-runner, pyyaml, packaging,
    yapf, terminaltables, numpy, protobuf, six, pytest, pytorch, torchvision }:
 
 # with import <nixpkgs> {};
 # with python3Packages;
 
-buildPythonPackage rec {
+let
+  cudatoolkit_joined = symlinkJoin {
+    name = "${cudatoolkit.name}-unsplit";
+    paths = [ cudatoolkit.out cudatoolkit.lib ];
+  };
+
+in buildPythonPackage rec {
   pname = "mmcv-full";
   rev = "v1.5.2";
   name = "${pname}-${rev}";
@@ -22,10 +28,9 @@ buildPythonPackage rec {
   MMCV_WITH_OPS=1;
 
   FORCE_CUDA=if withCuda then 1 else 0;
+  TORCH_CUDA_ARCH_LIST = lib.optionalString withCuda lib.strings.concatStringsSep ";" cudaArchList;
 
-  postPatch = ''python -c 'import torch; print("CUDA AVALIABLE", torch.cuda.is_available())' '';
-
-  nativeBuildInputs = [ninja which] ++ (if withCuda then [cudatoolkit] else []);
+  nativeBuildInputs = [ninja which] ++ (if withCuda then [cudatoolkit_joined] else []);
   buildInputs = [pybind11 pytest-runner pillow pytest torchvision];
 
   propagatedBuildInputs = [ addict numpy packaging pytorch pyyaml opencv3 yapf terminaltables];
