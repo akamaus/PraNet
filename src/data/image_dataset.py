@@ -15,8 +15,11 @@ class TransformingDataset(torch.utils.data.IterableDataset):
 
 
 class MultiGlobDataset(TransformingDataset):
-    def __init__(self, patterns: Union[str, list[str]]):
+    def __init__(self, patterns: Union[str, list[str]], skiplist=None):
         super().__init__()
+
+        if skiplist is None:
+            skiplist = []
 
         if isinstance(patterns, str):
             patterns = [patterns]
@@ -25,7 +28,7 @@ class MultiGlobDataset(TransformingDataset):
         for pat in patterns:
             files += list(glob(pat))
 
-        self.files = files
+        self.files = [f for f in files if f not in set(skiplist)]
 
     def __iter__(self):
         for fn in self.files:

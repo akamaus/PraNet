@@ -2,6 +2,7 @@
 import logging
 import multiprocessing as mp
 import os
+import os.path as osp
 import pickle
 from argparse import ArgumentParser
 from functools import partial
@@ -137,10 +138,21 @@ def main():
         device = 'cpu'
         visible_devices = ['0']
 
+    already_processed = []
+    if osp.exists(args.out):
+        with open(args.out, 'rb') as f:
+            while True:
+                try:
+                    row = pickle.load(f)
+                    already_processed.append(row['filename'])
+                except EOFError:
+                    logger.info(f'Found {len(already_processed)} already processed images')
+                    break
+
     res_q = mp.Queue()
 
     ds = MultiGlobDataset(['/mnt/media/Photo/Походы/2021-05-Пра-Клепики-Деулино/*/*',
-                          '/mnt/media/Photo/Походы/2022-06-Пра-Деулино-ББор/*/*'])
+                          '/mnt/media/Photo/Походы/2022-06-Пра-Деулино-ББор/*/*'], skiplist=already_processed)
 
     procs = []
     for k in range(args.n_inferrers):
@@ -151,7 +163,7 @@ def main():
         inferrer.start()
         procs.append(inferrer)
 
-    with open(args.out, 'wb') as f:
+    with open(args.out, 'ab') as f:
         pbar = tqdm(desc='Processing')
         while True:
             res = res_q.get()
