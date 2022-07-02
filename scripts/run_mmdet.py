@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.INFO,
 #logging.basicConfig(level=logging.DEBUG)
 
 
-class DetectorRunner(mp.Process):
+class DetectorProcess(mp.Process):
     def __init__(self, config: Path, checkpoint: Path,
                  dataset: Dataset, res_queue: mp.Queue,
                  batch_size=1, device='cpu', cuda_device=None):
@@ -117,6 +117,68 @@ class DetectorRunner(mp.Process):
         self.res_queue.put(None)
 
 
+class Processor:
+    def __init__(self, config:Path, checkpoint:Path, skiplist=None, n_inferrers=1, cuda:bool = True):
+        self.result_q = mp.Queue()
+
+        ds = MultiGlobDataset(['/mnt/media/Photo/Походы/2021-05-Пра-Клепики-Деулино/*/*',
+                               '/mnt/media/Photo/Походы/2022-06-Пра-Деулино-ББор/*/*'], skiplist=skiplist)
+
+        if cuda:
+            device = 'cuda'
+            visible_devices = os.getenv('CUDA_VISIBLE_DEVICES', ','.join(map(str, range(torch.cuda.device_count()))))
+        else:
+            device = 'cpu'
+            visible_devices = ['0']
+
+        procs = []
+        for k in range(n_inferrers):
+            assert n_inferrers == 1, 'Multiple inferrers are not supported, need to split dataset'
+            d = visible_devices[k % len(visible_devices)]
+            inferrer = DetectorProcess(config, checkpoint, dataset=ds, res_queue=self.result_q, batch_size=1,
+                                       device=device, cuda_device=d)
+            procs.append(inferrer)
+
+        self.inferrers = procs
+
+    @staticmethod
+    def read_already_processed(path):
+        already_processed = []
+        if osp.exists(path):
+            with open(path, 'rb') as f:
+                while True:
+                    try:
+                        row = pickle.load(f)
+                        already_processed.append(row['filename'])
+                    except EOFError:
+                        logger.info(f'Found {len(already_processed)} already processed images')
+                        break
+
+        return already_processed
+
+    def _consumer_loop(self, out):
+        with open(out, 'ab') as f:
+            pbar = tqdm(desc='Processing')
+            while True:
+                res = self.result_q.get()
+                if res is None:
+                    logger.info('Finishing')
+                    break
+
+                pickle.dump(res, f)
+                pbar.update()
+                pbar.write(f'Processed {res["filename"]}')
+
+    def process(self, **kwargs):
+        for p in self.inferrers:
+            p.start()
+
+        self._consumer_loop(**kwargs)
+        logger.info('joining inferrers')
+        for p in self.inferrers:
+            p.join()
+
+
 def main():
     mp.set_start_method('spawn')
 
@@ -124,6 +186,7 @@ def main():
     parser.add_argument('--out', type=str, required=True)
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--n_inferrers', type=int, default=1)
+    parser.add_argument('--mode', choices='dump render'.split(), required=True)
     args = parser.parse_args()
 
     logger.info('main()')
@@ -131,53 +194,10 @@ def main():
     config = Path('mmdetection/configs/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
     checkpoint = Path('checkpoints/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco_bbox_mAP-0.408__segm_mAP-0.37_20200504_163245-42aa3d00.pth')
 
-    if args.cuda:
-        device = 'cuda'
-        visible_devices = os.getenv('CUDA_VISIBLE_DEVICES', ','.join(map(str, range(torch.cuda.device_count()))))
-    else:
-        device = 'cpu'
-        visible_devices = ['0']
-
-    already_processed = []
-    if osp.exists(args.out):
-        with open(args.out, 'rb') as f:
-            while True:
-                try:
-                    row = pickle.load(f)
-                    already_processed.append(row['filename'])
-                except EOFError:
-                    logger.info(f'Found {len(already_processed)} already processed images')
-                    break
-
-    res_q = mp.Queue()
-
-    ds = MultiGlobDataset(['/mnt/media/Photo/Походы/2021-05-Пра-Клепики-Деулино/*/*',
-                          '/mnt/media/Photo/Походы/2022-06-Пра-Деулино-ББор/*/*'], skiplist=already_processed)
-
-    procs = []
-    for k in range(args.n_inferrers):
-        assert args.n_inferrers == 1, 'Multiple inferrers are not supported, need to split dataset'
-        d = visible_devices[k % len(visible_devices)]
-        inferrer = DetectorRunner(config, checkpoint, dataset=ds, res_queue=res_q, batch_size=1,
-                                  device=device, cuda_device=d)
-        inferrer.start()
-        procs.append(inferrer)
-
-    with open(args.out, 'ab') as f:
-        pbar = tqdm(desc='Processing')
-        while True:
-            res = res_q.get()
-            if res is None:
-                logger.info('Finishing')
-                break
-
-            pickle.dump(res, f)
-            pbar.update()
-            pbar.write(f'Processed {res["filename"]}')
-
-    logger.info('joining inferrers')
-    for p in procs:
-        p.join()
+    if args.mode == 'dump':
+        skiplist = Processor.read_already_processed(args.out)
+        proc = Processor(config=config, checkpoint=checkpoint, cuda=args.cuda, skiplist=skiplist)
+        proc.process(out=args.out)
 
 
 if __name__ == '__main__':
