@@ -28,7 +28,7 @@ in buildPythonPackage rec {
   MMCV_WITH_OPS=1;
 
   FORCE_CUDA=if withCuda then 1 else 0;
-  TORCH_CUDA_ARCH_LIST = lib.optionalString withCuda lib.strings.concatStringsSep ";" cudaArchList;
+  TORCH_CUDA_ARCH_LIST = lib.optionalString withCuda (lib.strings.concatStringsSep ";" cudaArchList);
 
   nativeBuildInputs = [ninja which] ++ (if withCuda then [cudatoolkit_joined] else []);
   buildInputs = [pybind11 pytest-runner pillow pytest torchvision];
