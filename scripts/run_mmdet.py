@@ -2,14 +2,15 @@
 import logging
 import multiprocessing as mp
 import os
-import os.path as osp
 import pickle
 from argparse import ArgumentParser
 from functools import partial
 from pathlib import Path
 import sys
 
+import numpy as np
 import torch.utils.data
+from PIL import Image
 from torch.utils.data import Dataset
 
 import mmcv.runner
@@ -18,8 +19,6 @@ from mmcv.runner import load_checkpoint
 from mmcv.parallel import collate
 import mmdet
 import mmdet.datasets
-
-import multiprocessing as mp
 
 from tqdm import tqdm
 
@@ -103,8 +102,10 @@ class DetectorProcess(mp.Process):
                 logger.debug('Infer done')
 
                 for i in range(len(results)):
-                    fn = batch['img_metas'][0][i]['filename']
-                    res = {'filename': fn, 'result': results[i]}
+                    meta = batch['img_metas'][0][i]
+                    res = {'filename': meta['filename'],
+                           'infer_size': (meta['img_shape'][1], meta['img_shape'][0]),
+                           'result': results[i]}
                     yield res
 
     def run(self):
@@ -142,9 +143,10 @@ class Processor:
         self.inferrers = procs
 
     @staticmethod
-    def read_already_processed(path):
+    def read_already_processed(path: Path):
+        path = Path(path)
         already_processed = []
-        if osp.exists(path):
+        if path.exists():
             with open(path, 'rb') as f:
                 while True:
                     try:
@@ -179,6 +181,35 @@ class Processor:
             p.join()
 
 
+class SegmentationRenderingProcess(Processor):
+    def _consumer_loop(self, out: Path, skip_prefix: str = '', score_thr: float = 0.5, flat=False):
+        model = self.inferrers[0].model
+
+        pbar = tqdm(desc='Processing')
+        while True:
+            res = self.result_q.get()
+            if res is None:
+                logger.info('Finishing')
+                break
+
+            fn = res['filename']
+            img = Image.open(fn)
+            assert fn.startswith(skip_prefix), f"file {fn} and prefix {skip_prefix} don't match each other"
+            seg_img = Image.fromarray(model.show_result(np.array(img.resize(res['infer_size'])),
+                                                        res['result'], score_thr=score_thr, font_size=20))
+
+            if flat:
+                out_fn = out / Path(fn).name
+            else:
+                out_fn = out / fn[len(skip_prefix):]
+            if out_fn.exists():
+                logger.warning(f'Overwriting existing {out_fn}')
+            out_fn.parent.mkdir(exist_ok=True, parents=True)
+            seg_img.save(out_fn)
+            pbar.write(f'Processed {out_fn}')
+            pbar.update()
+
+
 def main():
     mp.set_start_method('spawn')
 
@@ -187,6 +218,8 @@ def main():
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--n_inferrers', type=int, default=1)
     parser.add_argument('--mode', choices='dump render'.split(), required=True)
+    parser.add_argument('--score_thr', type=float, default=0.5)
+    parser.add_argument('--flat', action='store_true', help='Render all the results in a single directory')
     args = parser.parse_args()
 
     logger.info('main()')
@@ -194,10 +227,16 @@ def main():
     config = Path('mmdetection/configs/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
     checkpoint = Path('checkpoints/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco_bbox_mAP-0.408__segm_mAP-0.37_20200504_163245-42aa3d00.pth')
 
+    out = Path(args.out)
+    out.mkdir(exist_ok=True)
+
     if args.mode == 'dump':
         skiplist = Processor.read_already_processed(args.out)
         proc = Processor(config=config, checkpoint=checkpoint, cuda=args.cuda, skiplist=skiplist)
-        proc.process(out=args.out)
+        proc.process(out=out)
+    elif args.mode == 'render':
+        proc = SegmentationRenderingProcess(config=config, checkpoint=checkpoint, cuda=args.cuda)
+        proc.process(out=out, skip_prefix='/mnt/media/Photo/Походы/', score_thr=args.score_thr, flat=args.flat)
 
 
 if __name__ == '__main__':
