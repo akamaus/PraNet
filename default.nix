@@ -12,7 +12,9 @@ let
 
  mmcv = pypkgs.callPackage ./mmcv.nix {cudatoolkit=my_cudatoolkit; pytorch=my_pytorch; torchvision=my_torchvision;
                                        withCuda=withCuda; cudaArchList = pypkgs.pytorchWithCuda.cudaArchList;};
- mmdetection = pypkgs.callPackage ./mmdetection.nix {mmcv = mmcv;};
+ mmdet = pypkgs.callPackage ./mmdetection.nix {mmcv = mmcv;};
+ mmcls = pypkgs.callPackage ./mmclassification.nix {mmcv = mmcv;};
+ mmseg = pypkgs.callPackage ./mmsegmentation.nix {mmcls = mmcls;};
 
  pythonEnv = (pkgs.python3.withPackages
   (ps: with ps;
@@ -33,12 +35,9 @@ let
       tensorboardx
       tqdm
 
-      mmdetection
-
-#      addict
-#      terminaltables
-#      yapf
-#      opencv3
+      mmdet
+      mmseg
+      mmcls
     ]));
 
  python_env_link_dir = "python-env";

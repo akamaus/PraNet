@@ -1,9 +1,6 @@
-{lib, fetchFromGitHub, cudatoolkit, which,
+{lib, fetchFromGitHub,
   withTests ? false,
    buildPythonPackage, matplotlib, mmcv, numpy, cython, pycocotools, terminaltables }:
-
-# with import <nixpkgs> {};
-# with python3Packages;
 
 buildPythonPackage rec {
   pname = "mmdet";
@@ -24,7 +21,7 @@ buildPythonPackage rec {
   doCheck = withTests;
 
   meta = {
-    description = "base package for mm stuff";
+    description = "MMDetection is an open source object detection toolbox based on PyTorch. It is a part of the OpenMMLab project.";
     homepage = https://github.com/open-mmlab/mmcv;
     maintainers = with lib.maintainers; [ akamaus ];
   };
