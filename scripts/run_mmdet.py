@@ -292,6 +292,27 @@ class DumpingPipeline:
             p.join()
 
 
+def get_common_prefix(paths):
+    common = Path(paths[0])
+    cur_common_len = len(common.parts)
+
+    for p in paths:
+        p = Path(p)
+        n_common = 0
+        for part, part_c in zip(p.parts, common.parts):
+            if part == part_c and '*' not in part_c and '?' not in part_c:
+                n_common += 1
+            else:
+                break
+
+            if n_common == cur_common_len:
+                break
+
+        cur_common_len = n_common
+    common = list(reversed(common.parents))[cur_common_len - 1]
+    return common
+
+
 def main():
     mp.set_start_method('spawn')
 
@@ -309,6 +330,11 @@ def main():
     args = parser.parse_args()
 
     logger.info('main()')
+
+
+    common_prefix = str(get_common_prefix(args.input_patterns)) + os.path.sep
+
+    logger.info(f'Stripping common prefix {common_prefix}')
 
     if args.task == 'instance_seg':
         config = Path('mmdetection/configs/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
@@ -329,10 +355,10 @@ def main():
         skiplist = DumpingPipeline.read_already_processed(args.out)
     elif args.mode == 'render':
         if args.task == 'instance_seg':
-            consumer = partial(InstanceSegRenderingConsumer, skip_prefix='/mnt/media/Photo/Походы/', out=out,
+            consumer = partial(InstanceSegRenderingConsumer, skip_prefix=common_prefix, out=out,
                                score_thr=args.score_thr, flat=args.flat)
         elif args.task == 'semantic_seg':
-            consumer = partial(SemanticSegRenderingConsumer, skip_prefix='/mnt/media/Photo/Походы/', out=out,
+            consumer = partial(SemanticSegRenderingConsumer, skip_prefix=common_prefix, out=out,
                                opacity=args.opacity, flat=args.flat)
         else:
             raise ValueError('Unknown task', args.task)
