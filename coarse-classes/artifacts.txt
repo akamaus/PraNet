@@ -1,0 +1,64 @@
+airplane
+banner
+bed
+bench
+bicycle
+blanket
+bridge
+building-other
+bus
+cabinet
+cage
+car
+cardboard
+carpet
+ceiling-other
+ceiling-tile
+chair
+couch
+counter
+cupboard
+curtain
+desk-stuff
+dining table
+door-stuff
+fire hydrant
+floor-marble
+floor-other
+floor-stone
+floor-tile
+floor-wood
+furniture-other
+hair drier
+keyboard
+laptop
+light
+metal
+microwave
+mirror-stuff
+motorcycle
+mouse
+net
+oven
+paper
+parking meter
+pillow
+plastic
+platform
+potted plant
+refrigerator
+remote
+rug
+shelf
+sink
+stop sign
+table
+teddy bear
+toaster
+toilet
+traffic light
+train
+truck
+tv
+vase
+wood

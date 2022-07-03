@@ -1,0 +1,14 @@
+apple
+banana
+broccoli
+cake
+carrot
+donut
+food-other
+fruit
+hot dog
+orange
+pizza
+salad
+sandwich
+vegetable

@@ -1,0 +1,34 @@
+backpack
+handbag
+tie
+suitcase
+skis
+snowboard
+sports ball
+kite
+baseball bat
+baseball glove
+skateboard
+surfboard
+tennis racket
+bottle
+wine glass
+cup
+fork
+knife
+spoon
+bowl
+cell phone
+book
+clock
+scissors
+toothbrush
+cloth
+clothes
+frisbee
+napkin
+tent
+textile-other
+towel
+umbrella
+mat
