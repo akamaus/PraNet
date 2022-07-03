@@ -337,11 +337,11 @@ def main():
     logger.info(f'Stripping common prefix {common_prefix}')
 
     if args.task == 'instance_seg':
-        config = Path('mmdetection/configs/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
+        config = Path('configs/mmdetection/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
         checkpoint = Path('checkpoints/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco_bbox_mAP-0.408__segm_mAP-0.37_20200504_163245-42aa3d00.pth')
         worker = DetectorProcess
     elif args.task == 'semantic_seg':
-        config = 'mmsegmentation/configs/pspnet/pspnet_r50-d8_512x512_4x4_320k_coco-stuff164k.py'
+        config = 'configs/mmsegmentation/pspnet/pspnet_r50-d8_512x512_4x4_320k_coco-stuff164k.py'
         checkpoint = 'checkpoints/pspnet_r50-d8_512x512_4x4_320k_coco-stuff164k_20210707_152004-be9610cc.pth'
         worker = SegmentorProcess
     else:
