@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 from typing import Callable, List
 
+import cv2
 import numpy as np
 import torch.utils.data
 from PIL import Image
@@ -178,7 +179,7 @@ class RenderingConsumer(BaseConsumer):
         self.skip_prefix = skip_prefix
         self.flat = flat
 
-    def render_image(self, scaled_img: Image, infer_result):
+    def render_image(self, scaled_img_arr: np.array, infer_result):
         raise NotImplementedError()
 
     def run(self):
@@ -192,10 +193,10 @@ class RenderingConsumer(BaseConsumer):
             fn = res['filename']
             assert fn.startswith(self.skip_prefix), f"file {fn} and prefix {self.skip_prefix} don't match each other"
 
-            img = Image.open(fn)
-            scaled_img = img.resize(res['infer_size'])
+            img_arr = cv2.imread(fn)
+            scaled_img_arr = cv2.resize(img_arr, res['infer_size'], interpolation=cv2.INTER_LINEAR)
 
-            seg_img = self.render_image(scaled_img, res['result'])
+            seg_img_arr = self.render_image(scaled_img_arr, res['result'])
 
             if self.flat:
                 out_fn = self.out / Path(fn).name
@@ -206,7 +207,7 @@ class RenderingConsumer(BaseConsumer):
             else:
                 logger.info(f'saving {out_fn}')
             out_fn.parent.mkdir(exist_ok=True, parents=True)
-            seg_img.save(out_fn)
+            cv2.imwrite(str(out_fn), seg_img_arr)
             pbar.update()
 
 
@@ -215,11 +216,10 @@ class SemanticSegRenderingConsumer(RenderingConsumer):
         super().__init__(**kwargs)
         self.opacity = opacity
 
-    def render_image(self, scaled_img, infer_result):
-        seg_img_arr = self.model.show_result(mmcv.rgb2bgr(np.array(scaled_img)), [infer_result],
+    def render_image(self, scaled_img_arr, infer_result):
+        seg_img_arr = self.model.show_result(scaled_img_arr, [infer_result],
                                              opacity=self.opacity, palette=cocostuff_crude_palette())
-        seg_img = Image.fromarray(mmcv.bgr2rgb(seg_img_arr))
-        return seg_img
+        return seg_img_arr
 
 
 class InstanceSegRenderingConsumer(RenderingConsumer):
@@ -227,10 +227,9 @@ class InstanceSegRenderingConsumer(RenderingConsumer):
         super().__init__(**kwargs)
         self.score_thr = score_thr
 
-    def render_image(self, scaled_img, infer_result):
-        seg_img_arr = self.model.show_result(mmcv.rgb2bgr(np.array(scaled_img)), infer_result, score_thr=self.score_thr, font_size=20)
-        seg_img = Image.fromarray(mmcv.bgr2rgb(seg_img_arr))
-        return seg_img
+    def render_image(self, scaled_img_arr, infer_result):
+        seg_img_arr = self.model.show_result(scaled_img_arr, infer_result, score_thr=self.score_thr, font_size=20)
+        return seg_img_arr
 
 
 class DumpingPipeline:
