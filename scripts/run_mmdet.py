@@ -7,7 +7,7 @@ from argparse import ArgumentParser
 from functools import partial
 from pathlib import Path
 import sys
-from typing import Callable
+from typing import Callable, List
 
 import numpy as np
 import torch.utils.data
@@ -172,7 +172,7 @@ class DumpingConsumer(BaseConsumer):
                 pbar.write(f'Processed {res["filename"]}')
 
 
-class RenderingConsumber(BaseConsumer):
+class RenderingConsumer(BaseConsumer):
     def __init__(self, result_q: mp.Queue, out: Path, model: torch.nn.Module, skip_prefix: str, flat=False):
         super().__init__(result_q, out, model=model)
         self.skip_prefix = skip_prefix
@@ -210,7 +210,7 @@ class RenderingConsumber(BaseConsumer):
             pbar.update()
 
 
-class SemanticSegRenderingConsumer(RenderingConsumber):
+class SemanticSegRenderingConsumer(RenderingConsumer):
     def __init__(self, opacity: float = 0.5, **kwargs):
         super().__init__(**kwargs)
         self.opacity = opacity
@@ -222,7 +222,7 @@ class SemanticSegRenderingConsumer(RenderingConsumber):
         return seg_img
 
 
-class InstanceSegRenderingConsumer(RenderingConsumber):
+class InstanceSegRenderingConsumer(RenderingConsumer):
     def __init__(self, score_thr: float = 0.5, **kwargs):
         super().__init__(**kwargs)
         self.score_thr = score_thr
@@ -234,12 +234,11 @@ class InstanceSegRenderingConsumer(RenderingConsumber):
 
 
 class DumpingPipeline:
-    def __init__(self, processor_cls: Callable, consumer_cls: Callable,
+    def __init__(self, input_patterns: List[str], processor_cls: Callable, consumer_cls: Callable,
                  config: Path, checkpoint: Path, skiplist=None, n_inferrers: int = 1, n_consumers: int = 1, cuda: bool = True):
         self.result_q = mp.Queue()
 
-        ds = MultiGlobDataset(['/mnt/media/Photo/Походы/2021-05-Пра-Клепики-Деулино/*/*',
-                               '/mnt/media/Photo/Походы/2022-06-Пра-Деулино-ББор/*/*'], skiplist=skiplist)
+        ds = MultiGlobDataset(input_patterns, skiplist=skiplist)
 
         if cuda:
             device = 'cuda'
@@ -298,15 +297,16 @@ def main():
     mp.set_start_method('spawn')
 
     parser = ArgumentParser()
-    parser.add_argument('--out', type=str, required=True)
+    parser.add_argument('--input_patterns', nargs='+', required=True, help='Globbing patterns for locating input images')
+    parser.add_argument('--out', type=str, required=True, help='Output directiry')
     parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('--n_inferrers', type=int, default=1)
-    parser.add_argument('--n_consumers', type=int, default=1)
-    parser.add_argument('--mode', choices='dump render'.split(), required=True)
-    parser.add_argument('--task', choices="instance_seg semantic_seg".split(), required=True)
-    parser.add_argument('--score_thr', type=float, default=0.5)
-    parser.add_argument('--opacity', type=float, default=0.5)
-    parser.add_argument('--flat', action='store_true', help='Render all the results in a single directory')
+    parser.add_argument('--n_inferrers', type=int, default=1, help='Number of inferring workers')
+    parser.add_argument('--n_consumers', type=int, default=1, help='Number of result saving workers')
+    parser.add_argument('--mode', choices='dump render'.split(), required=True, help='Either dump the results or render demo images')
+    parser.add_argument('--task', choices="instance_seg semantic_seg".split(), required=True, help='Either detect object instances or just classify all the image pixels')
+    parser.add_argument('--score_thr', type=float, default=0.5, help='Threshold for instance segmentation')
+    parser.add_argument('--opacity', type=float, default=0.5, help='Opacity for rendering segmentation results')
+    parser.add_argument('--flat', action='store_true', help='If set, render all the results in a single directory')
     args = parser.parse_args()
 
     logger.info('main()')
@@ -341,7 +341,7 @@ def main():
     else:
         raise ValueError('Unknown mode', args.mode)
 
-    proc = DumpingPipeline(processor_cls=worker, consumer_cls=consumer,
+    proc = DumpingPipeline(input_patterns=args.input_patterns, processor_cls=worker, consumer_cls=consumer,
                            n_inferrers=args.n_inferrers, n_consumers=args.n_consumers,
                            config=config, checkpoint=checkpoint, cuda=args.cuda, skiplist=skiplist)
     proc.process()
