@@ -7,10 +7,12 @@ from argparse import ArgumentParser
 from functools import partial
 from pathlib import Path
 import sys
+from typing import Callable
 
 import numpy as np
 import torch.utils.data
 from PIL import Image
+from mmseg.models import build_segmentor
 from torch.utils.data import Dataset
 
 import mmcv.runner
@@ -23,7 +25,7 @@ import mmdet.datasets
 from tqdm import tqdm
 
 from src.data.image_dataset import MultiGlobDataset
-
+from src.palette import cocostuff_crude_palette
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO,
@@ -53,7 +55,7 @@ class DetectorProcess(mp.Process):
 
         # Initialize the detector
         self.model = build_detector(self.config.model)
-        checkpoint = load_checkpoint(self.model, str(checkpoint), map_location=device)
+        checkpoint = load_checkpoint(self.model, str(checkpoint), map_location='cpu')
 
         # Set the classes of models for inference
         self.model.CLASSES = checkpoint['meta']['CLASSES']
@@ -66,8 +68,6 @@ class DetectorProcess(mp.Process):
         self.device = device
         self.cuda_device = cuda_device
 
-        # Convert the model to GPU
-        self.model.to(device)
         # Convert the model into evaluation mode
         self.model.eval()
         logger.info('DetectionRunner.__init__ done')
@@ -98,28 +98,144 @@ class DetectorProcess(mp.Process):
 
             with torch.no_grad():
                 logger.debug(f'Infer {batch}')
-                results = self.model(return_loss=False, **batch)
-                logger.debug('Infer done')
+                results = self.model(return_loss=False, rescale=False, **batch)
 
                 for i in range(len(results)):
                     meta = batch['img_metas'][0][i]
                     res = {'filename': meta['filename'],
                            'infer_size': (meta['img_shape'][1], meta['img_shape'][0]),
                            'result': results[i]}
+
+                    logger.debug(f'Infer result {res}')
                     yield res
 
     def run(self):
         logger.info(f'running on device {self.device} {self.cuda_device}')
         os.environ['CUDA_VISIBLE_DEVICES'] = self.cuda_device
 
+        self.model.to(self.device)
+
         for result in self.infer(self.dataset):
             self.res_queue.put(result)
 
-        self.res_queue.put(None)
+        # enough poison for all
+        for k in range(100):
+            self.res_queue.put(None)
 
 
-class Processor:
-    def __init__(self, config:Path, checkpoint:Path, skiplist=None, n_inferrers=1, cuda:bool = True):
+class SegmentorProcess(DetectorProcess):
+    def __init__(self, config: Path, checkpoint: Path,
+                 dataset: Dataset, res_queue: mp.Queue,
+                 batch_size=1, device='cpu', cuda_device=None):
+        mp.Process.__init__(self)
+        logger.info('SegmentorProcess.__init__ start')
+        self.dataset = dataset
+        self.res_queue = res_queue
+
+        self.config = mmcv.Config.fromfile(config)
+        self.config.model.pretrained = None
+        self.config.model.train_cfg = None
+
+        model = build_segmentor(self.config.model)
+        checkpoint = load_checkpoint(model, str(checkpoint), map_location='cpu')
+        model.CLASSES = checkpoint['meta']['CLASSES']
+        model.PALETTE = checkpoint['meta']['PALETTE']
+        model.eval()
+        self.model = model
+
+        self.batch_size = batch_size
+        self.device = device
+        self.cuda_device = cuda_device
+
+
+class BaseConsumer(mp.Process):
+    def __init__(self, result_q: mp.Queue, out: Path, model: torch.nn.Module):
+        super().__init__()
+        logger.info('BaseConsumer.__init__')
+        self.result_q = result_q
+        self.out = out
+        self.model = model
+
+
+class DumpingConsumer(BaseConsumer):
+    def run(self):
+        with open(self.out, 'ab') as f:
+            pbar = tqdm(desc='Processing')
+            while True:
+                res = self.result_q.get()
+                if res is None:
+                    logger.info('Finishing')
+                    break
+
+                pickle.dump(res, f)
+                pbar.update()
+                pbar.write(f'Processed {res["filename"]}')
+
+
+class RenderingConsumber(BaseConsumer):
+    def __init__(self, result_q: mp.Queue, out: Path, model: torch.nn.Module, skip_prefix: str, flat=False):
+        super().__init__(result_q, out, model=model)
+        self.skip_prefix = skip_prefix
+        self.flat = flat
+
+    def render_image(self, scaled_img: Image, infer_result):
+        raise NotImplementedError()
+
+    def run(self):
+        pbar = tqdm(desc='Rendering results')
+        while True:
+            res = self.result_q.get()
+            if res is None:
+                logger.info('Finishing')
+                break
+
+            fn = res['filename']
+            assert fn.startswith(self.skip_prefix), f"file {fn} and prefix {self.skip_prefix} don't match each other"
+
+            img = Image.open(fn)
+            scaled_img = img.resize(res['infer_size'])
+
+            seg_img = self.render_image(scaled_img, res['result'])
+
+            if self.flat:
+                out_fn = self.out / Path(fn).name
+            else:
+                out_fn = self.out / fn[len(self.skip_prefix):]
+            if out_fn.exists():
+                logger.warning(f'Overwriting existing {out_fn}')
+            else:
+                logger.info(f'saving {out_fn}')
+            out_fn.parent.mkdir(exist_ok=True, parents=True)
+            seg_img.save(out_fn)
+            pbar.update()
+
+
+class SemanticSegRenderingConsumer(RenderingConsumber):
+    def __init__(self, opacity: float = 0.5, **kwargs):
+        super().__init__(**kwargs)
+        self.opacity = opacity
+
+    def render_image(self, scaled_img, infer_result):
+        seg_img_arr = self.model.show_result(mmcv.rgb2bgr(np.array(scaled_img)), [infer_result],
+                                             opacity=self.opacity, palette=cocostuff_crude_palette())
+        seg_img = Image.fromarray(mmcv.bgr2rgb(seg_img_arr))
+        return seg_img
+
+
+class InstanceSegRenderingConsumer(RenderingConsumber):
+    def __init__(self, score_thr: float = 0.5, **kwargs):
+        super().__init__(**kwargs)
+        self.score_thr = score_thr
+
+    def render_image(self, scaled_img, infer_result):
+        seg_img_arr = self.model.show_result(mmcv.rgb2bgr(np.array(scaled_img)), infer_result, score_thr=self.score_thr, font_size=20)
+        seg_img = Image.fromarray(mmcv.bgr2rgb(seg_img_arr))
+        return seg_img
+
+
+class DumpingPipeline:
+    def __init__(self, processor_cls: Callable, consumer_cls: Callable,
+                 config: Path, checkpoint: Path, skiplist=None, n_inferrers: int = 1, n_consumers: int = 1, cuda: bool = True):
         self.result_q = mp.Queue()
 
         ds = MultiGlobDataset(['/mnt/media/Photo/Походы/2021-05-Пра-Клепики-Деулино/*/*',
@@ -136,11 +252,17 @@ class Processor:
         for k in range(n_inferrers):
             assert n_inferrers == 1, 'Multiple inferrers are not supported, need to split dataset'
             d = visible_devices[k % len(visible_devices)]
-            inferrer = DetectorProcess(config, checkpoint, dataset=ds, res_queue=self.result_q, batch_size=1,
-                                       device=device, cuda_device=d)
+            inferrer = processor_cls(config, checkpoint, dataset=ds, res_queue=self.result_q, batch_size=1,
+                                     device=device, cuda_device=d)
             procs.append(inferrer)
-
         self.inferrers = procs
+
+        procs = []
+        for k in range(n_consumers):
+            cons = consumer_cls(result_q=self.result_q, model=self.inferrers[0].model)
+            procs.append(cons)
+
+        self.consumers = procs
 
     @staticmethod
     def read_already_processed(path: Path):
@@ -158,56 +280,18 @@ class Processor:
 
         return already_processed
 
-    def _consumer_loop(self, out):
-        with open(out, 'ab') as f:
-            pbar = tqdm(desc='Processing')
-            while True:
-                res = self.result_q.get()
-                if res is None:
-                    logger.info('Finishing')
-                    break
-
-                pickle.dump(res, f)
-                pbar.update()
-                pbar.write(f'Processed {res["filename"]}')
-
-    def process(self, **kwargs):
+    def process(self):
         for p in self.inferrers:
             p.start()
+        for p in self.consumers:
+            p.start()
 
-        self._consumer_loop(**kwargs)
         logger.info('joining inferrers')
         for p in self.inferrers:
             p.join()
-
-
-class SegmentationRenderingProcess(Processor):
-    def _consumer_loop(self, out: Path, skip_prefix: str = '', score_thr: float = 0.5, flat=False):
-        model = self.inferrers[0].model
-
-        pbar = tqdm(desc='Processing')
-        while True:
-            res = self.result_q.get()
-            if res is None:
-                logger.info('Finishing')
-                break
-
-            fn = res['filename']
-            img = Image.open(fn)
-            assert fn.startswith(skip_prefix), f"file {fn} and prefix {skip_prefix} don't match each other"
-            seg_img = Image.fromarray(model.show_result(np.array(img.resize(res['infer_size'])),
-                                                        res['result'], score_thr=score_thr, font_size=20))
-
-            if flat:
-                out_fn = out / Path(fn).name
-            else:
-                out_fn = out / fn[len(skip_prefix):]
-            if out_fn.exists():
-                logger.warning(f'Overwriting existing {out_fn}')
-            out_fn.parent.mkdir(exist_ok=True, parents=True)
-            seg_img.save(out_fn)
-            pbar.write(f'Processed {out_fn}')
-            pbar.update()
+        logger.info('joining consumers')
+        for p in self.consumers:
+            p.join()
 
 
 def main():
@@ -217,26 +301,50 @@ def main():
     parser.add_argument('--out', type=str, required=True)
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--n_inferrers', type=int, default=1)
+    parser.add_argument('--n_consumers', type=int, default=1)
     parser.add_argument('--mode', choices='dump render'.split(), required=True)
+    parser.add_argument('--task', choices="instance_seg semantic_seg".split(), required=True)
     parser.add_argument('--score_thr', type=float, default=0.5)
+    parser.add_argument('--opacity', type=float, default=0.5)
     parser.add_argument('--flat', action='store_true', help='Render all the results in a single directory')
     args = parser.parse_args()
 
     logger.info('main()')
 
-    config = Path('mmdetection/configs/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
-    checkpoint = Path('checkpoints/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco_bbox_mAP-0.408__segm_mAP-0.37_20200504_163245-42aa3d00.pth')
+    if args.task == 'instance_seg':
+        config = Path('mmdetection/configs/mask_rcnn/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco.py')
+        checkpoint = Path('checkpoints/mask_rcnn_r50_caffe_fpn_mstrain-poly_3x_coco_bbox_mAP-0.408__segm_mAP-0.37_20200504_163245-42aa3d00.pth')
+        worker = DetectorProcess
+    elif args.task == 'semantic_seg':
+        config = 'mmsegmentation/configs/pspnet/pspnet_r50-d8_512x512_4x4_320k_coco-stuff164k.py'
+        checkpoint = 'checkpoints/pspnet_r50-d8_512x512_4x4_320k_coco-stuff164k_20210707_152004-be9610cc.pth'
+        worker = SegmentorProcess
+    else:
+        raise ValueError('Unknown task', args.task)
 
     out = Path(args.out)
     out.mkdir(exist_ok=True)
 
     if args.mode == 'dump':
-        skiplist = Processor.read_already_processed(args.out)
-        proc = Processor(config=config, checkpoint=checkpoint, cuda=args.cuda, skiplist=skiplist)
-        proc.process(out=out)
+        consumer = partial(DumpingConsumer, out=out)
+        skiplist = DumpingPipeline.read_already_processed(args.out)
     elif args.mode == 'render':
-        proc = SegmentationRenderingProcess(config=config, checkpoint=checkpoint, cuda=args.cuda)
-        proc.process(out=out, skip_prefix='/mnt/media/Photo/Походы/', score_thr=args.score_thr, flat=args.flat)
+        if args.task == 'instance_seg':
+            consumer = partial(InstanceSegRenderingConsumer, skip_prefix='/mnt/media/Photo/Походы/', out=out,
+                               score_thr=args.score_thr, flat=args.flat)
+        elif args.task == 'semantic_seg':
+            consumer = partial(SemanticSegRenderingConsumer, skip_prefix='/mnt/media/Photo/Походы/', out=out,
+                               opacity=args.opacity, flat=args.flat)
+        else:
+            raise ValueError('Unknown task', args.task)
+        skiplist = []
+    else:
+        raise ValueError('Unknown mode', args.mode)
+
+    proc = DumpingPipeline(processor_cls=worker, consumer_cls=consumer,
+                           n_inferrers=args.n_inferrers, n_consumers=args.n_consumers,
+                           config=config, checkpoint=checkpoint, cuda=args.cuda, skiplist=skiplist)
+    proc.process()
 
 
 if __name__ == '__main__':
