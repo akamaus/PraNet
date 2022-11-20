@@ -20,6 +20,7 @@ let
   (ps: with ps;
     [
       filelock
+      gpxpy
       ipython
       jupyter
       line_profiler
@@ -47,7 +48,7 @@ let
  shellHook = ''
 export PATH=${pip_env}/bin:$PATH
 export PIP_PREFIX=${pip_env}
-export PYTHONPATH=".:${pip_path}"
+export PYTHONPATH=".:`pwd`/${pip_path}"
 
 if [ -d ${python_env_link_dir} ]
 then
